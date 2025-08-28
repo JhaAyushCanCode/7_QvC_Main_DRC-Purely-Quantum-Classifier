@@ -22,22 +22,22 @@ from transformers import AutoTokenizer, AutoModel
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
-# Set random seeds 
+# Set random seeds for reproducibility
 torch.manual_seed(42)
 np.random.seed(42)
 
-# Set double precision 
+# Set double precision for PennyLane stability
 torch.set_default_dtype(torch.float64)
 
-# Configuration
+# Configuration with your specified parameters
 N_QUBITS = 12
 N_LAYERS = 3
 N_LABELS = 28
-BATCH_SIZE = 16  # Reduced for memory efficiency
-EPOCHS = 100
-LEARNING_RATE = 0.01
-PATIENCE = 15  # Early stopping patience
-MIN_DELTA = 1e-4  # Minimum improvement for early stopping
+BATCH_SIZE = 64      
+EPOCHS = 100         
+LEARNING_RATE = 0.01 
+PATIENCE = 30        
+MIN_DELTA = 1e-4     
 
 # Dataset paths 
 DATA_DIR = r"C:\Users\Admin\.spyder-py3\QvC-3_docs"
@@ -45,14 +45,14 @@ TRAIN_PATH = os.path.join(DATA_DIR, "train.csv")
 VAL_PATH   = os.path.join(DATA_DIR, "val.csv")
 TEST_PATH  = os.path.join(DATA_DIR, "test.csv")
 
-# Using GPU for classical components, CPU for quantum operations
+
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-QUANTUM_DEVICE = torch.device("cpu") 
+QUANTUM_DEVICE = torch.device("cpu")  # PennyLane quantum circuits run on CPU
 logger.info(f"Using device: {DEVICE} for classical operations, CPU for quantum operations")
 
-# Ensure reproducibility
-torch.backends.cudnn.deterministic = True
-torch.backends.cudnn.benchmark = False
+# GPU optimizations
+torch.backends.cudnn.deterministic = False  # Allow non-deterministic for speed
+torch.backends.cudnn.benchmark = True       # Enable cudnn benchmark for speed
 
 # GoEmotions label names for interpretability
 GOEMOTIONS_LABELS = [
@@ -83,21 +83,21 @@ def compute_pos_weights(y_train: np.ndarray) -> torch.Tensor:
     pos_counts = np.sum(y_train, axis=0)
     neg_counts = len(y_train) - pos_counts
     
-    # NEVER division by zero
+    # Avoid division by zero
     pos_weights = np.where(pos_counts > 0, neg_counts / pos_counts, 1.0)
     
-    # Clipping extreme weights to move away instability
+    # Clip extreme weights to avoid instability
     pos_weights = np.clip(pos_weights, 0.1, 10.0)
     
     logger.info(f"Computed pos_weights - min: {pos_weights.min():.3f}, max: {pos_weights.max():.3f}, mean: {pos_weights.mean():.3f}")
-    return torch.tensor(pos_weights, dtype=torch.float64, device=torch.device("cpu"))  # Keep on CPU for quantum operations
+    return torch.tensor(pos_weights, dtype=torch.float64, device=torch.device("cpu"))
 
 class DimensionalityReduction(nn.Module):
     """Reduces BERT embeddings to qubit-compatible dimensions."""
     
     def __init__(self, input_dim: int = 768, output_dim: int = N_QUBITS):
         super(DimensionalityReduction, self).__init__()
-        
+        # Simplified architecture to reduce overfitting risk
         self.network = nn.Sequential(
             nn.Linear(input_dim, output_dim * 2),
             nn.LayerNorm(output_dim * 2),
@@ -107,7 +107,7 @@ class DimensionalityReduction(nn.Module):
             nn.Tanh()  # Bounded output for stable quantum encoding
         )
         
-        
+        # Xavier initialization for better training
         self.apply(self._init_weights)
     
     def _init_weights(self, module):
@@ -118,7 +118,7 @@ class DimensionalityReduction(nn.Module):
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         return self.network(x)
 
-# quantum device
+# Define quantum device
 dev = qml.device("default.qubit", wires=N_QUBITS)
 
 @qml.qnode(dev, interface="torch", diff_method="adjoint")
@@ -170,7 +170,7 @@ def init_quantum_weights() -> nn.ParameterList:
     for layer_idx in range(N_LAYERS):
         # Small angle initialization to avoid barren plateaus
         # StronglyEntanglingLayers expects shape: (n_layers, n_wires, 3)
-        layer_weights = torch.normal(0, 0.1, size=(1, N_QUBITS, 3), dtype=torch.float64)  # Double precision
+        layer_weights = torch.normal(0, 0.1, size=(1, N_QUBITS, 3), dtype=torch.float64)
         weights.append(nn.Parameter(layer_weights))
     
     return nn.ParameterList(weights)
@@ -236,13 +236,13 @@ class PureQuantumModel(nn.Module):
         """
         batch_size = x.size(0)
         
-        # Reduce dimensionality 
+        # Reduce dimensionality (keep on GPU for speed)
         x_reduced = self.dim_reduction(x)  # Shape: (batch_size, N_QUBITS)
         
         # Move to CPU for quantum processing
         x_reduced_cpu = x_reduced.cpu()
         
-        # Process through quantum circuit 
+        # Process through quantum circuit (sample by sample)
         expectations = torch.zeros(batch_size, N_LABELS, dtype=torch.float64)
         
         for i in range(batch_size):
@@ -264,7 +264,7 @@ class PureQuantumModel(nn.Module):
 class EarlyStopping:
     """Early stopping utility class."""
     
-    def __init__(self, patience: int = 15, min_delta: float = 1e-4):
+    def __init__(self, patience: int = PATIENCE, min_delta: float = MIN_DELTA):
         self.patience = patience
         self.min_delta = min_delta
         self.counter = 0
@@ -325,16 +325,17 @@ def create_data_loaders(X_train: np.ndarray, y_train: np.ndarray,
         train_dataset, 
         batch_size=BATCH_SIZE, 
         shuffle=True, 
-        num_workers=2 if DEVICE.type == 'cuda' else 0,  # Use workers for GPU
-        pin_memory=DEVICE.type == 'cuda',  # Pin memory for GPU transfers
-        persistent_workers=DEVICE.type == 'cuda' and True
+        num_workers=4 if DEVICE.type == 'cuda' else 0,
+        pin_memory=DEVICE.type == 'cuda',
+        persistent_workers=DEVICE.type == 'cuda' and True,
+        drop_last=True  # Drop incomplete batches for consistent processing
     )
     
     val_loader = DataLoader(
         val_dataset, 
         batch_size=BATCH_SIZE, 
         shuffle=False, 
-        num_workers=2 if DEVICE.type == 'cuda' else 0,
+        num_workers=4 if DEVICE.type == 'cuda' else 0,
         pin_memory=DEVICE.type == 'cuda',
         persistent_workers=DEVICE.type == 'cuda' and True
     )
@@ -351,7 +352,7 @@ def train_model(model: PureQuantumModel, train_loader: DataLoader, val_loader: D
     # Optimizer with L2 weight decay to prevent overfitting
     optimizer = Adam([
         {'params': model.dim_reduction.parameters(), 'lr': LEARNING_RATE, 'weight_decay': 1e-4},
-        {'params': model.quantum_weights, 'lr': LEARNING_RATE * 0.1, 'weight_decay': 1e-5},  # Lower decay for quantum
+        {'params': model.quantum_weights, 'lr': LEARNING_RATE * 0.1, 'weight_decay': 1e-5},
         {'params': [model.output_scales, model.output_biases], 'lr': LEARNING_RATE * 0.5, 'weight_decay': 1e-4}
     ])
     
@@ -369,6 +370,7 @@ def train_model(model: PureQuantumModel, train_loader: DataLoader, val_loader: D
     
     best_val_f1 = 0.0
     best_model_state = None
+    optimal_thresholds = np.full(N_LABELS, 0.5)  # Initialize with default thresholds
     
     logger.info("Starting training...")
     
@@ -383,8 +385,8 @@ def train_model(model: PureQuantumModel, train_loader: DataLoader, val_loader: D
         for batch_idx, (batch_X, batch_y) in enumerate(train_pbar):
             try:
                 # Move batch to device
-                batch_X = batch_X.to(DEVICE)
-                batch_y = batch_y.to(DEVICE)
+                batch_X = batch_X.to(DEVICE, non_blocking=True)
+                batch_y = batch_y.to(DEVICE, non_blocking=True)
                 
                 optimizer.zero_grad()
                 
@@ -407,17 +409,18 @@ def train_model(model: PureQuantumModel, train_loader: DataLoader, val_loader: D
                 
                 epoch_train_loss += loss.item()
                 
-                # Store probabilities for F1 calculation (not thresholded predictions)
+                # Store probabilities for F1 calculation
                 with torch.no_grad():
                     proba = torch.sigmoid(outputs).detach().cpu().numpy().astype(np.float64)
                     train_proba_list.append(proba)
                     train_labels_list.append(batch_y.cpu().numpy())
                 
                 # Update progress bar
-                train_pbar.set_postfix({
-                    'Loss': f'{loss.item():.4f}',
-                    'LR': f'{optimizer.param_groups[0]["lr"]:.6f}'
-                })
+                if batch_idx % 50 == 0:  # Update every 50 batches
+                    train_pbar.set_postfix({
+                        'Loss': f'{loss.item():.4f}',
+                        'LR': f'{optimizer.param_groups[0]["lr"]:.6f}'
+                    })
                 
             except Exception as e:
                 logger.error(f"Training error at epoch {epoch+1}, batch {batch_idx}: {e}")
@@ -447,8 +450,8 @@ def train_model(model: PureQuantumModel, train_loader: DataLoader, val_loader: D
             
             for batch_X, batch_y in val_pbar:
                 try:
-                    batch_X = batch_X.to(DEVICE)
-                    batch_y = batch_y.to(DEVICE)
+                    batch_X = batch_X.to(DEVICE, non_blocking=True)
+                    batch_y = batch_y.to(DEVICE, non_blocking=True)
                     
                     outputs = model(batch_X)
                     loss = criterion(outputs, batch_y)
@@ -456,7 +459,7 @@ def train_model(model: PureQuantumModel, train_loader: DataLoader, val_loader: D
                     if not torch.isnan(loss):
                         epoch_val_loss += loss.item()
                     
-                    # Store probabilities (not thresholded predictions)
+                    # Store probabilities
                     proba = torch.sigmoid(outputs).detach().cpu().numpy().astype(np.float64)
                     val_proba_list.append(proba)
                     val_labels_list.append(batch_y.cpu().numpy())
@@ -473,7 +476,7 @@ def train_model(model: PureQuantumModel, train_loader: DataLoader, val_loader: D
             val_proba = np.vstack(val_proba_list)
             val_labels = np.vstack(val_labels_list)
             
-            # Optimize thresholds on validation set
+            # Optimize thresholds on validation set EVERY epoch as requested
             optimal_thresholds = optimize_thresholds(val_labels, val_proba)
             
             # Apply optimized thresholds
@@ -504,6 +507,10 @@ def train_model(model: PureQuantumModel, train_loader: DataLoader, val_loader: D
                    f"Train Loss: {epoch_train_loss:.4f}, Train F1: {train_f1s[-1]:.4f} | "
                    f"Val Loss: {epoch_val_loss:.4f}, Val F1: {val_f1s[-1]:.4f}")
         
+        # Clear GPU cache periodically
+        if epoch % 10 == 0:
+            torch.cuda.empty_cache()
+        
         # Early stopping check
         if early_stopping(val_f1s[-1]):
             logger.info(f"Early stopping triggered at epoch {epoch+1}")
@@ -511,21 +518,13 @@ def train_model(model: PureQuantumModel, train_loader: DataLoader, val_loader: D
     
     # Load best model
     if best_model_state is not None:
-        # Careful loading to maintain device placement
-        current_devices = {
-            'dim_reduction': next(model.dim_reduction.parameters()).device,
-            'quantum_weights': [p.device for p in model.quantum_weights],
-            'output_scales': model.output_scales.device,
-            'output_biases': model.output_biases.device
-        }
-        
         model.load_state_dict(best_model_state)
+        # Restore proper device placement
+        model.dim_reduction.to(DEVICE)
+        model.output_scales = model.output_scales.to(DEVICE)
+        model.output_biases = model.output_biases.to(DEVICE)
         
-        # Restore proper device placement after loading
-        model.dim_reduction.to(current_devices['dim_reduction'])
-        model.output_scales = model.output_scales.to(current_devices['output_scales'])
-        model.output_biases = model.output_biases.to(current_devices['output_biases'])
-        
+        # Ensure quantum weights stay on CPU
         for i, p in enumerate(model.quantum_weights):
             if p.device.type != 'cpu':
                 model.quantum_weights[i] = nn.Parameter(p.detach().to('cpu'), requires_grad=True)
@@ -548,8 +547,8 @@ def evaluate_on_test(model: PureQuantumModel, X_test: np.ndarray, y_test: np.nda
         test_dataset, 
         batch_size=BATCH_SIZE, 
         shuffle=False, 
-        num_workers=0,  # No workers for final evaluation
-        pin_memory=False
+        num_workers=2 if DEVICE.type == 'cuda' else 0,
+        pin_memory=DEVICE.type == 'cuda'
     )
     
     model.eval()
@@ -560,8 +559,8 @@ def evaluate_on_test(model: PureQuantumModel, X_test: np.ndarray, y_test: np.nda
     with torch.no_grad():
         for batch_X, batch_y in tqdm(test_loader, desc="Test Evaluation"):
             try:
-                batch_X = batch_X.to(DEVICE)
-                batch_y = batch_y.to(DEVICE)
+                batch_X = batch_X.to(DEVICE, non_blocking=True)
+                batch_y = batch_y.to(DEVICE, non_blocking=True)
                 
                 outputs = model(batch_X)
                 proba = torch.sigmoid(outputs).detach().cpu().numpy().astype(np.float64)
@@ -609,6 +608,13 @@ def evaluate_on_test(model: PureQuantumModel, X_test: np.ndarray, y_test: np.nda
 def main():
     """Main training function."""
     try:
+        # Enable GPU optimizations
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+            torch.backends.cudnn.enabled = True
+            torch.backends.cudnn.benchmark = True
+            logger.info(f"GPU Memory available: {torch.cuda.get_device_properties(0).total_memory / 1024**3:.1f} GB")
+        
         # Load prepared datasets from CSV files
         logger.info("Loading prepared datasets from CSV files...")
         
@@ -638,21 +644,33 @@ def main():
             logger.error(f"Error loading datasets: {e}")
             return
 
-        # Load BERT encoder
+        # Load BERT encoder with optimizations
         logger.info("Loading BERT model...")
         tokenizer = AutoTokenizer.from_pretrained("bert-base-uncased")
         bert = AutoModel.from_pretrained("bert-base-uncased").to(DEVICE)
+        bert.eval()  # Set to eval mode for inference only
 
-        def bert_embed_batch(texts, batch_size=32):
+        def bert_embed_batch(texts, batch_size=128):  # As requested: 128
             """Generate BERT embeddings for a list of texts in batches."""
             all_embeddings = []
-            for i in tqdm(range(0, len(texts), batch_size), desc="Computing embeddings"):
-                batch_texts = texts[i:i+batch_size]
-                encodings = tokenizer(batch_texts, padding=True, truncation=True, return_tensors="pt", max_length=128)
-                encodings = {k: v.to(DEVICE) for k, v in encodings.items()}
-                with torch.no_grad():
+            with torch.no_grad():
+                for i in tqdm(range(0, len(texts), batch_size), desc="Computing embeddings"):
+                    batch_texts = texts[i:i+batch_size]
+                    encodings = tokenizer(
+                        batch_texts, 
+                        padding=True, 
+                        truncation=True, 
+                        return_tensors="pt", 
+                        max_length=128
+                    )
+                    encodings = {k: v.to(DEVICE, non_blocking=True) for k, v in encodings.items()}
                     embeddings = bert(**encodings).last_hidden_state[:, 0, :].cpu()  # CLS token
-                all_embeddings.append(embeddings)
+                    all_embeddings.append(embeddings)
+                    
+                    # Clear GPU cache periodically for large datasets
+                    if i % (batch_size * 20) == 0:
+                        torch.cuda.empty_cache()
+                        
             return torch.cat(all_embeddings, dim=0)
 
         # Generate BERT embeddings
@@ -660,6 +678,11 @@ def main():
         X_train = bert_embed_batch(df_train["text"].tolist()).numpy()
         X_val = bert_embed_batch(df_val["text"].tolist()).numpy()
         X_test = bert_embed_batch(df_test["text"].tolist()).numpy()
+        
+        # Clear BERT from GPU memory after embedding generation
+        del bert
+        torch.cuda.empty_cache()
+        logger.info("BERT model cleared from GPU memory")
         
         # Convert multi-hot labels to numpy arrays
         y_train = np.stack(df_train["multi_hot"].values)
@@ -677,6 +700,8 @@ def main():
         # Initialize model with proper device placement
         model = PureQuantumModel()
         model.dim_reduction.to(DEVICE)
+        model.output_scales = model.output_scales.to(DEVICE)
+        model.output_biases = model.output_biases.to(DEVICE)
         
         # Ensure quantum weights stay on CPU
         for i, p in enumerate(model.quantum_weights):
@@ -684,6 +709,7 @@ def main():
                 model.quantum_weights[i] = nn.Parameter(p.detach().to('cpu'), requires_grad=True)
                 
         logger.info(f"Model architecture:\n{model}")
+        logger.info(f"GPU Memory allocated: {torch.cuda.memory_allocated() / 1024**3:.2f} GB")
         
         # Train model
         train_losses, val_losses, train_f1s, val_f1s, optimal_thresholds = train_model(
@@ -734,8 +760,9 @@ def main():
         plt.grid(True, alpha=0.3)
         
         plt.tight_layout()
-        plt.savefig('results/pure_quantum_training.png', dpi=300, bbox_inches='tight')
+        plt.savefig('results/pure_quantum_training.png', dpi=150, bbox_inches='tight')
         plt.show()
+        plt.close()  # Close figure to free memory
         
         # Evaluate on test set
         test_results = evaluate_on_test(model, X_test, y_test, optimal_thresholds)
@@ -748,21 +775,32 @@ def main():
                 'N_QUBITS': N_QUBITS,
                 'N_LAYERS': N_LAYERS,
                 'N_LABELS': N_LABELS,
-                'LEARNING_RATE': LEARNING_RATE
+                'LEARNING_RATE': LEARNING_RATE,
+                'BATCH_SIZE': BATCH_SIZE,
+                'EPOCHS': EPOCHS,
+                'PATIENCE': PATIENCE,
+                'MIN_DELTA': MIN_DELTA
             },
             'results': results.to_dict('list'),
             'best_val_f1': max(val_f1s) if val_f1s else 0.0,
             'test_results': test_results,
+            'optimal_thresholds': optimal_thresholds.tolist(),
             'observables_map': model.observables_map
         }, 'results/pure_quantum_model.pth')
         
+        # Final cleanup
+        torch.cuda.empty_cache()
+        
         logger.info(f"Training completed! Best validation F1: {max(val_f1s):.4f}")
         logger.info("Model and results saved in 'results/' directory")
+        logger.info(f"Final GPU Memory: {torch.cuda.memory_allocated() / 1024**3:.2f} GB")
         
     except Exception as e:
         logger.error(f"Training failed with error: {e}")
+        # Cleanup on error
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
         raise
 
 if __name__ == "__main__":
-
     main()
