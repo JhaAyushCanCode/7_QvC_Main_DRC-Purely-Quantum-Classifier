@@ -22,11 +22,11 @@ from transformers import AutoTokenizer, AutoModel
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
-# Set random seeds for reproducibility
+# Set random seeds 
 torch.manual_seed(42)
 np.random.seed(42)
 
-# Set double precision for PennyLane stability
+# Set double precision 
 torch.set_default_dtype(torch.float64)
 
 # Configuration
@@ -39,15 +39,15 @@ LEARNING_RATE = 0.01
 PATIENCE = 15  # Early stopping patience
 MIN_DELTA = 1e-4  # Minimum improvement for early stopping
 
-# Dataset paths - UPDATE THESE PATHS TO MATCH YOUR DIRECTORY
+# Dataset paths 
 DATA_DIR = r"C:\Users\Admin\.spyder-py3\QvC-3_docs"
 TRAIN_PATH = os.path.join(DATA_DIR, "train.csv")
 VAL_PATH   = os.path.join(DATA_DIR, "val.csv")
 TEST_PATH  = os.path.join(DATA_DIR, "test.csv")
 
-# Use GPU for classical components, CPU for quantum operations
+# Using GPU for classical components, CPU for quantum operations
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-QUANTUM_DEVICE = torch.device("cpu")  # Keep quantum operations on CPU
+QUANTUM_DEVICE = torch.device("cpu") 
 logger.info(f"Using device: {DEVICE} for classical operations, CPU for quantum operations")
 
 # Ensure reproducibility
@@ -83,10 +83,10 @@ def compute_pos_weights(y_train: np.ndarray) -> torch.Tensor:
     pos_counts = np.sum(y_train, axis=0)
     neg_counts = len(y_train) - pos_counts
     
-    # Avoid division by zero
+    # NEVER division by zero
     pos_weights = np.where(pos_counts > 0, neg_counts / pos_counts, 1.0)
     
-    # Clip extreme weights to avoid instability
+    # Clipping extreme weights to move away instability
     pos_weights = np.clip(pos_weights, 0.1, 10.0)
     
     logger.info(f"Computed pos_weights - min: {pos_weights.min():.3f}, max: {pos_weights.max():.3f}, mean: {pos_weights.mean():.3f}")
@@ -97,7 +97,7 @@ class DimensionalityReduction(nn.Module):
     
     def __init__(self, input_dim: int = 768, output_dim: int = N_QUBITS):
         super(DimensionalityReduction, self).__init__()
-        # Simplified architecture to reduce overfitting risk
+        
         self.network = nn.Sequential(
             nn.Linear(input_dim, output_dim * 2),
             nn.LayerNorm(output_dim * 2),
@@ -107,7 +107,7 @@ class DimensionalityReduction(nn.Module):
             nn.Tanh()  # Bounded output for stable quantum encoding
         )
         
-        # Xavier initialization for better training
+        
         self.apply(self._init_weights)
     
     def _init_weights(self, module):
@@ -118,7 +118,7 @@ class DimensionalityReduction(nn.Module):
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         return self.network(x)
 
-# Define quantum device
+# quantum device
 dev = qml.device("default.qubit", wires=N_QUBITS)
 
 @qml.qnode(dev, interface="torch", diff_method="adjoint")
@@ -236,13 +236,13 @@ class PureQuantumModel(nn.Module):
         """
         batch_size = x.size(0)
         
-        # Reduce dimensionality (keep on GPU for speed)
+        # Reduce dimensionality 
         x_reduced = self.dim_reduction(x)  # Shape: (batch_size, N_QUBITS)
         
         # Move to CPU for quantum processing
         x_reduced_cpu = x_reduced.cpu()
         
-        # Process through quantum circuit (sample by sample)
+        # Process through quantum circuit 
         expectations = torch.zeros(batch_size, N_LABELS, dtype=torch.float64)
         
         for i in range(batch_size):
@@ -764,4 +764,5 @@ def main():
         raise
 
 if __name__ == "__main__":
+
     main()
